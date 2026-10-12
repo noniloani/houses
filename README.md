@@ -39,7 +39,7 @@ Needs Android Studio (or JDK 17+ and Android SDK 36), an Android phone with the 
 and the glasses with Developer Mode on and the toolkit installed.
 
 ```bash
-cd houses
+git clone https://github.com/noniloani/houses && cd houses
 ./gradlew installDebug        # phone connected over adb
 ./gradlew testDebugUnitTest   # parser/ranking tests (uses a real BC Assessment fixture)
 ```
