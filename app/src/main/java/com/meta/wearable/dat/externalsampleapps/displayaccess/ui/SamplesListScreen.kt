@@ -106,22 +106,35 @@ fun SamplesListScreen(
     onStopDeveloperPreview: () -> Unit,
     modifier: Modifier = Modifier,
     previewDisplayKit: MockDisplayKit? = null,
+    scan: com.meta.wearable.dat.externalsampleapps.displayaccess.house.HouseScanState,
+    vision: com.meta.wearable.dat.externalsampleapps.displayaccess.house.VisionState,
+    connected: Boolean,
+    onStopScanning: () -> Unit,
+    onRescan: () -> Unit,
+    onSelect: (com.meta.wearable.dat.externalsampleapps.displayaccess.house.AddressSite) -> Unit,
+    onConnect: () -> Unit,
 ) {
   val sample = SampleApp.BC_HOUSE_HUD
   var isDeveloperPreviewPresented by rememberSaveable { mutableStateOf(false) }
   var selectedDeveloperPreviewMode by rememberSaveable {
-    mutableStateOf(DeveloperPreviewMode.CHROME)
+    mutableStateOf(DeveloperPreviewMode.IN_APP)
   }
 
-  SampleContent(
-      sample = sample,
-      isTryItEnabled = isTryItEnabled,
-      isDeveloperPreviewBusy = isDeveloperPreviewBusy,
-      onOpenDeveloperPreview = {
-        selectedDeveloperPreviewMode = developerPreviewMode ?: DeveloperPreviewMode.CHROME
+  LiveScannerScreen(
+      scan = scan,
+      vision = vision,
+      connected = connected,
+      busy = isDeveloperPreviewBusy,
+      error = developerPreviewErrorMessage,
+      onStart = { onSampleSelected(sample) },
+      onStop = onStopScanning,
+      onRescan = onRescan,
+      onSelect = onSelect,
+      onConnect = onConnect,
+      onPreview = {
+        selectedDeveloperPreviewMode = developerPreviewMode ?: DeveloperPreviewMode.IN_APP
         isDeveloperPreviewPresented = true
       },
-      onTryIt = { onSampleSelected(sample) },
       modifier = modifier,
   )
 

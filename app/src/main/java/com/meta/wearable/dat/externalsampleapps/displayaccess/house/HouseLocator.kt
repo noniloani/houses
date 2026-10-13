@@ -18,7 +18,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** Where the wearer is and which way they face (degrees from true north), when known. */
-data class Fix(val latitude: Double, val longitude: Double, val accuracyM: Float, val headingDeg: Float?)
+data class Fix(val latitude: Double, val longitude: Double, val accuracyM: Float, val headingDeg: Float?, val ageMs: Long = 0)
 
 /**
  * Tracks the phone's GPS position and compass heading. The phone has to roughly face the same
@@ -35,7 +35,8 @@ class HouseLocator(context: Context) : SensorEventListener, LocationListener {
   private val orientation = FloatArray(3)
 
   val fix: Fix?
-    get() = lastLocation?.let { Fix(it.latitude, it.longitude, it.accuracy, headingDeg) }
+    get() = lastLocation?.let { Fix(it.latitude, it.longitude, it.accuracy, headingDeg,
+        ((android.os.SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000).coerceAtLeast(0)) }
 
   @SuppressLint("MissingPermission") // Requested in MainActivity before the HUD can start.
   fun start() {

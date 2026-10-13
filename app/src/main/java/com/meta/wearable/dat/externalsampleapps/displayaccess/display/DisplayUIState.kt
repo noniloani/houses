@@ -27,6 +27,7 @@ data class DisplayUIState(
     val isPreparingDisplay: Boolean = false,
 
     // UI
+    val isRequestingCamera: Boolean = false,
     val isStartingSession: Boolean = false,
     val isStoppingSession: Boolean = false,
     val isDatAppUpdateRequired: Boolean = false,

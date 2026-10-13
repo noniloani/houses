@@ -28,7 +28,7 @@ object HudRenderer {
   private val GREY = Color.rgb(160, 168, 180)
   private val PANEL = Color.rgb(22, 30, 44)
 
-  fun render(p: PropertyAssessment, listing: ListingStatus, distanceM: Int?): Bitmap {
+  fun render(p: PropertyAssessment, listing: ListingStatus, distanceM: Int?, identification: String = "Nearby estimate"): Bitmap {
     val bmp = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
     val c = Canvas(bmp)
     c.drawColor(Color.BLACK)
@@ -37,12 +37,13 @@ object HudRenderer {
     // Accent bar + address
     c.drawRoundRect(RectF(0f, 0f, 8f, 70f), 4f, 4f, fill(CYAN))
     val street = p.address.substringBefore(" V").ifBlank { p.address }
-    c.drawText(ellipsize(titleCase(street), 30), 22f, 32f, text(WHITE, 28f, bold))
+    c.drawText(identification.uppercase(), 22f, 17f, text(CYAN, 13f, bold))
+    c.drawText(ellipsize(titleCase(street), 30), 22f, 44f, text(WHITE, 25f, bold))
     val sub = listOfNotNull(
         distanceM?.let { "~${it} m away" },
         p.description?.let { titleCase(it) },
     ).joinToString("  ·  ")
-    c.drawText(ellipsize(sub, 46), 22f, 62f, text(GREY, 19f))
+    c.drawText(ellipsize(sub, 46), 22f, 68f, text(GREY, 16f))
 
     // Big assessed value
     val total = p.totalValue

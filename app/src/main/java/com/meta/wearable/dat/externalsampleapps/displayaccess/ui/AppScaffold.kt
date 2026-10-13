@@ -67,20 +67,23 @@ object Routes {
   const val SAMPLES_LIST = "samples_list"
 }
 
-private val BackgroundColor = Color(0xFFF2F2F7)
-private val TabContainerColor = Color(0xFFF6F6FA)
-private val ActiveTabColor = Color(0xFFE7E7ED)
-private val ActiveBlue = Color(0xFF3478F6)
+private val BackgroundColor = Color(0xFF0B1B23)
+private val TabContainerColor = Color(0xFF142633)
+private val ActiveTabColor = Color(0xFF244335)
+private val ActiveBlue = Color(0xFF91E7C2)
 
 @Composable
 fun AppScaffold(
     wearablesViewModel: WearablesViewModel,
     modifier: Modifier = Modifier,
+    onRequestCameraPermission: suspend (com.meta.wearable.dat.core.types.Permission) -> com.meta.wearable.dat.core.types.PermissionStatus,
 ) {
   val navController = rememberNavController()
   val wearablesState by wearablesViewModel.uiState.collectAsStateWithLifecycle()
   val displayViewModel: DisplayViewModel = viewModel()
   val displayState by displayViewModel.uiState.collectAsStateWithLifecycle()
+  val scanState by displayViewModel.scanState.collectAsStateWithLifecycle()
+  val visionState by displayViewModel.visionState.collectAsStateWithLifecycle()
   val mockGlasses by wearablesViewModel.mockDisplayGlasses.collectAsStateWithLifecycle()
   val chromePreviewInfo by wearablesViewModel.chromePreviewInfo.collectAsStateWithLifecycle()
   val developerPreviewMode by wearablesViewModel.developerPreviewMode.collectAsStateWithLifecycle()
@@ -157,7 +160,7 @@ fun AppScaffold(
   ) { contentPadding ->
     NavHost(
         navController = navController,
-        startDestination = Routes.CONNECT,
+        startDestination = Routes.SAMPLES_LIST,
         modifier = Modifier.fillMaxSize().padding(contentPadding),
     ) {
       composable(Routes.CONNECT) {
@@ -179,6 +182,7 @@ fun AppScaffold(
       composable(Routes.SAMPLES_LIST) {
         val isDeveloperPreviewBusy =
             isDeveloperPreviewChanging ||
+                displayState.isRequestingCamera ||
                 displayState.isStartingSession ||
                 displayState.isStoppingSession ||
                 displayState.isPreparingDisplay ||
@@ -192,7 +196,7 @@ fun AppScaffold(
               if (!displayViewModel.stopSession()) return@launch
               val deviceId = wearablesViewModel.setDeveloperPreviewMode(mode)
               if (mode != null && deviceId != null) {
-                displayViewModel.sendSampleToPreview(SampleApp.CAR_MAINTENANCE, deviceId)
+                displayViewModel.sendSampleToPreview(SampleApp.BC_HOUSE_HUD, deviceId)
               }
             } catch (error: CancellationException) {
               throw error
@@ -215,10 +219,17 @@ fun AppScaffold(
             chromePreviewUrl = chromePreviewInfo?.url,
             developerPreviewErrorMessage =
                 developerPreviewErrorMessage ?: displayState.errorMessage,
-            onSampleSelected = { sample -> displayViewModel.sendSampleToDisplay(sample) },
+            onSampleSelected = { displayViewModel.startScanning(onRequestCameraPermission) },
             onStartDeveloperPreview = ::updateDeveloperPreview,
             onStopDeveloperPreview = { updateDeveloperPreview(null) },
             previewDisplayKit = previewDisplayKit,
+            scan = scanState,
+            vision = visionState,
+            connected = wearablesState.registrationState == RegistrationState.REGISTERED,
+            onStopScanning = { coroutineScope.launch { displayViewModel.stopSession() } },
+            onRescan = displayViewModel::rescanHouse,
+            onSelect = displayViewModel::selectHouse,
+            onConnect = ::openSettings,
         )
       }
 
@@ -245,7 +256,7 @@ private fun BottomTabBar(
       modifier =
           Modifier.fillMaxWidth()
               .navigationBarsPadding()
-              .padding(horizontal = 72.dp, vertical = 18.dp)
+              .padding(horizontal = 36.dp, vertical = 10.dp)
               .clip(RoundedCornerShape(999.dp))
               .background(TabContainerColor)
               .padding(8.dp),
@@ -262,8 +273,8 @@ private fun BottomTabBar(
         },
         selected = currentRoute == Routes.SAMPLES_LIST,
         enabled = samplesEnabled,
-        activeContentColor = Color.Black,
-        inactiveContentColor = Color.Black.copy(alpha = 0.35f),
+        activeContentColor = Color(0xFF91E7C2),
+        inactiveContentColor = Color(0xFF91E7C2).copy(alpha = 0.35f),
         onClick = onOpenSamples,
         modifier = Modifier.weight(1f),
     )
@@ -279,7 +290,7 @@ private fun BottomTabBar(
         selected = currentRoute == Routes.CONNECT,
         enabled = true,
         activeContentColor = ActiveBlue,
-        inactiveContentColor = Color.Black.copy(alpha = 0.35f),
+        inactiveContentColor = Color(0xFF91E7C2).copy(alpha = 0.35f),
         onClick = onOpenSettings,
         modifier = Modifier.weight(1f),
     )
@@ -303,7 +314,7 @@ private fun BottomTab(
               .clip(CircleShape)
               .background(if (selected) ActiveTabColor else Color.Transparent)
               .clickable(enabled = enabled, onClick = onClick)
-              .padding(vertical = 14.dp),
+              .padding(vertical = 10.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
   ) {
     val contentColor =

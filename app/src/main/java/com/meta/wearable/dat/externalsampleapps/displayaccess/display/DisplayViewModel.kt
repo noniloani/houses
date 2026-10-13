@@ -47,6 +47,10 @@ import com.meta.wearable.dat.display.views.VideoPlayer
 import com.meta.wearable.dat.externalsampleapps.displayaccess.R
 import com.meta.wearable.dat.externalsampleapps.displayaccess.SampleApp
 import com.meta.wearable.dat.externalsampleapps.displayaccess.house.HouseHudController
+import com.meta.wearable.dat.externalsampleapps.displayaccess.house.GlassesVision
+import com.meta.wearable.dat.externalsampleapps.displayaccess.house.AddressSite
+import com.meta.wearable.dat.core.types.Permission
+import com.meta.wearable.dat.core.types.PermissionStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -221,6 +225,41 @@ class DisplayViewModel(
           send = { content -> sendContent(content) },
       )
 
+  val scanState = houseHud.state
+  private val vision = GlassesVision(viewModelScope, houseHud::observe, houseHud::cameraAvailability)
+  val visionState = vision.state
+  private var cameraRequested = false
+  private var scanStartJob: Job? = null
+
+  fun startScanning(requestPermission: suspend (Permission) -> PermissionStatus) {
+    if (scanStartJob?.isActive == true || scanState.value.active) return
+    scanStartJob = viewModelScope.launch {
+      _uiState.value = _uiState.value.copy(isRequestingCamera = true, errorMessage = null)
+      try {
+        val existing = Wearables.checkPermissionStatus(Permission.CAMERA)
+            .getOrDefault(PermissionStatus.Denied)
+        val granted = if (existing == PermissionStatus.Granted) existing else requestPermission(Permission.CAMERA)
+        cameraRequested = granted == PermissionStatus.Granted
+        if (!cameraRequested) vision.unavailable("Camera permission denied. Location estimates remain available.")
+        sendSampleToDisplay(SampleApp.BC_HOUSE_HUD)
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        _uiState.value = _uiState.value.copy(errorMessage = error.message ?: "Unable to start scanning")
+      } finally { _uiState.value = _uiState.value.copy(isRequestingCamera = false) }
+    }
+  }
+
+  fun rescanHouse() = houseHud.rescanNow()
+  fun selectHouse(site: AddressSite) = houseHud.select(site)
+
+  fun pauseScanning() {
+    // A permission redirect occurs before the scan starts; allow it to complete on return.
+    if (scanState.value.active || _uiState.value.isStartingSession) {
+      cameraRequested = false
+      viewModelScope.launch { stopSession() }
+    }
+  }
+
   // -- Session lifecycle --
 
   private fun startSession(
@@ -265,6 +304,7 @@ class DisplayViewModel(
                     }
                     DeviceSessionState.STOPPED -> {
                       Log.i(TAG, "Session stopped")
+                      vision.stop()
                       houseHud.stop()
                       clearPendingWork()
                       cleanupDisplay()
@@ -487,6 +527,8 @@ class DisplayViewModel(
       sample: SampleApp,
       deviceId: DeviceIdentifier,
   ) {
+    cameraRequested = false
+    vision.unavailable("Phone display preview · no glasses camera")
     queueOrSendSample(
         sample = sample,
         deviceSelector = SpecificDeviceSelector(deviceId),
@@ -526,7 +568,12 @@ class DisplayViewModel(
   private fun sendSampleContent(sample: SampleApp) {
     Log.i(TAG, "Sending sample to display: ${sample.name}")
     when (sample) {
-      SampleApp.BC_HOUSE_HUD -> houseHud.start()
+      SampleApp.BC_HOUSE_HUD -> {
+        houseHud.start()
+        if (cameraRequested) {
+          synchronized(sessionLock) { session }?.let(vision::start)
+        }
+      }
       SampleApp.CAR_MAINTENANCE -> displayCarMaintenanceScreen()
     }
   }
@@ -558,7 +605,9 @@ class DisplayViewModel(
   private fun stopSessionImmediately(): Boolean {
     return try {
       Log.d(TAG, "Stopping session")
+      vision.stop()
       houseHud.stop()
+      cameraRequested = false
       clearPendingWork()
       _uiState.value =
           _uiState.value.copy(
@@ -614,6 +663,9 @@ class DisplayViewModel(
 
   private fun handleSessionError(error: DeviceSessionError) {
     Log.e(TAG, "Session error: ${error.description}")
+    vision.stop()
+    houseHud.stop()
+    cameraRequested = false
     clearPendingWork()
     cleanupDisplay()
     clearSessionStateJob()?.cancel()

@@ -9,23 +9,17 @@
 package com.meta.wearable.dat.externalsampleapps.displayaccess.ui
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-private val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF2147A8),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFF3F6FF),
-    onPrimaryContainer = Color(0xFF142B63),
-    secondary = Color(0xFF6B7280),
-    onSecondary = Color.White,
-    surface = Color.White,
-    onSurface = Color(0xFF111827),
-    onSurfaceVariant = Color(0xFF667085),
-    outline = Color(0xFFD9E1F2),
-    background = Color(0xFFF4F7FC),
-    onBackground = Color(0xFF111827),
+private val LightColorScheme = darkColorScheme(
+    primary = Color(0xFF91E7C2), onPrimary = Color(0xFF0B1B23),
+    primaryContainer = Color(0xFF244335), onPrimaryContainer = Color(0xFFB9F3D8),
+    secondary = Color(0xFF97A9B7), onSecondary = Color(0xFF0B1B23),
+    surface = Color(0xFF142633), onSurface = Color(0xFFF3F5EF),
+    onSurfaceVariant = Color(0xFF97A9B7), outline = Color(0xFF334653),
+    background = Color(0xFF0B1B23), onBackground = Color(0xFFF3F5EF),
 )
 
 @Composable

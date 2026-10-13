@@ -1,205 +1,227 @@
 package com.meta.wearable.dat.externalsampleapps.displayaccess.house
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
-import com.meta.wearable.dat.display.views.Alignment
-import com.meta.wearable.dat.display.views.ButtonStyle
-import com.meta.wearable.dat.display.views.ContentScope
-import com.meta.wearable.dat.display.views.CornerRadius
-import com.meta.wearable.dat.display.views.Direction
-import com.meta.wearable.dat.display.views.FlexBoxBackground
-import com.meta.wearable.dat.display.views.FlexBoxScope
-import com.meta.wearable.dat.display.views.IconName
-import com.meta.wearable.dat.display.views.ImageSize
-import com.meta.wearable.dat.display.views.TextColor
-import com.meta.wearable.dat.display.views.TextStyle
-import kotlin.math.abs
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.meta.wearable.dat.display.views.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
-/**
- * Runs the BC house HUD: finds the address the wearer is facing, pulls its BC Assessment record
- * and pushes a colour HUD to the glasses. Follows the wearer automatically; Prev/Next on the
- * glasses cycle through nearby houses, and Rescan forces a fresh pick.
- */
+data class HouseScanState(
+    val active: Boolean = false,
+    val target: TargetDecision = TargetDecision(TargetKind.SEARCHING),
+    val assessment: PropertyAssessment? = null,
+    val candidates: List<AddressSite> = emptyList(),
+    val locationAccuracyM: Float? = null,
+    val locationAgeMs: Long? = null,
+    val loading: Boolean = false,
+    val message: String = "Start scanning to find a house",
+)
+
+/** Fuses live visual evidence with nearby civic addresses. All mutations run on Main. */
 class HouseHudController(
     context: Context,
     private val scope: CoroutineScope,
     private val send: (ContentScope.() -> Unit) -> Unit,
     private val listings: ListingProvider = ListingProvider.NONE,
 ) {
-  private companion object {
-    const val TAG = "HouseHud"
-    const val SEARCH_RADIUS_M = 70
-    const val MOVE_RESCAN_M = 12.0
-    const val TURN_RESCAN_DEG = 25f
-    const val MANUAL_HOLD_MS = 20_000L
-  }
-
   private val locator = HouseLocator(context.applicationContext)
   private val geocoder = BcGeocoderClient()
   private val assessments = BcAssessmentClient()
-  private val cache = object : LinkedHashMap<String, PropertyAssessment?>(64, 0.75f, true) {
-    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PropertyAssessment?>?) =
-        size > 60
+  private val resolver = TargetResolver()
+  private val _state = MutableStateFlow(HouseScanState())
+  val state = _state.asStateFlow()
+  private val cache = object : LinkedHashMap<String, PropertyAssessment>(64, .75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PropertyAssessment>?) = size > 60
   }
-
+  private val networkMutex = Mutex()
   private var followJob: Job? = null
+  private var candidateJob: Job? = null
   private var lookupJob: Job? = null
-  private var candidates: List<AddressSite> = emptyList()
-  private var index = 0
-  private var lastPickFix: Fix? = null
-  private var manualUntil = 0L
+  private var candidateFix: Fix? = null
+  private var candidateFetchedAt = 0L
+  private var lastRefreshAt = 0L
+  private var generation = 0L
+  private var candidateGeneration = 0L
+  private var cameraActive = false
+  private var lastHudKey = ""
+  private var selectedListing: ListingStatus = ListingStatus.Unknown
 
   fun start() {
     stop()
+    _state.value = HouseScanState(active = true, message = "Waiting for location…")
     locator.start()
-    showMessage("Scanning", "Finding the house you're facing…", IconName.HOUSE)
     followJob = scope.launch {
       while (isActive) {
         val fix = locator.fix
-        if (fix == null) {
-          if (candidates.isEmpty()) showMessage("Waiting for GPS", "Step outside or turn on location.", IconName.COMPASS_NORTH_UP_RED)
-        } else if (shouldRescan(fix)) {
-          rescan(fix)
+        val now = SystemClock.elapsedRealtime()
+        _state.update { it.copy(locationAccuracyM = fix?.accuracyM, locationAgeMs = fix?.ageMs) }
+        val moved = candidateFix?.let {
+          fix != null && HouseLocator.distanceM(it.latitude, it.longitude, fix.latitude, fix.longitude) > 8
+        } ?: true
+        if (moved || now - candidateFetchedAt > 30_000) {
+          if (_state.value.candidates.isNotEmpty()) {
+            _state.update { it.copy(candidates = emptyList()) }
+            resolver.invalidateVisual()
+          }
         }
-        delay(3_000)
+        if (fix != null && fix.ageMs <= 15_000 && fix.accuracyM <= 50 &&
+            candidateJob?.isActive != true && (lastRefreshAt == 0L ||
+                now - lastRefreshAt > if (moved) 3000 else 15_000)) refresh(fix)
+        applyDecision(resolver.current(fix, _state.value.candidates, now, cameraActive))
+        delay(500)
       }
     }
   }
 
   fun stop() {
-    followJob?.cancel()
-    lookupJob?.cancel()
-    followJob = null
-    lookupJob = null
-    locator.stop()
-    candidates = emptyList()
-    lastPickFix = null
+    generation++; candidateGeneration++
+    followJob?.cancel(); candidateJob?.cancel(); lookupJob?.cancel()
+    followJob = null; candidateJob = null; lookupJob = null
+    locator.stop(); resolver.reset()
+    candidateFix = null; candidateFetchedAt = 0; lastRefreshAt = 0
+    cameraActive = false; lastHudKey = ""
+    _state.value = HouseScanState()
   }
 
-  private fun shouldRescan(fix: Fix): Boolean {
-    if (System.currentTimeMillis() < manualUntil) return false
-    val last = lastPickFix ?: return true
-    val moved = HouseLocator.distanceM(last.latitude, last.longitude, fix.latitude, fix.longitude)
-    val turned = if (last.headingDeg != null && fix.headingDeg != null) {
-      var d = abs(last.headingDeg - fix.headingDeg)
-      if (d > 180) d = 360 - d
-      d
-    } else 0f
-    return moved > MOVE_RESCAN_M || turned > TURN_RESCAN_DEG
+  fun cameraAvailability(available: Boolean) {
+    cameraActive = available
+    if (_state.value.active) applyDecision(resolver.current(locator.fix, _state.value.candidates,
+        SystemClock.elapsedRealtime(), available))
   }
 
-  private suspend fun rescan(fix: Fix) {
-    lastPickFix = fix
-    val sites = withContext(Dispatchers.IO) {
-      runCatching { geocoder.sitesNear(fix.latitude, fix.longitude, SEARCH_RADIUS_M, 12) }
-          .onFailure { Log.w(TAG, "Geocoder failed", it) }
-          .getOrDefault(emptyList())
-    }
-    if (sites.isEmpty()) {
-      showMessage("No address here", "No BC civic address within $SEARCH_RADIUS_M m.", IconName.HOUSE)
-      return
-    }
-    val ranked = HouseLocator.rank(fix, sites)
-    if (ranked.firstOrNull() == candidates.getOrNull(index)) return // Same house, keep the HUD.
-    candidates = ranked
-    index = 0
-    showCurrent()
+  fun observe(tags: List<TextTag>, capturedAtMs: Long) {
+    if (!_state.value.active || !cameraActive || SystemClock.elapsedRealtime() - capturedAtMs >= 1500) return
+    applyDecision(resolver.observe(locator.fix, _state.value.candidates, tags, capturedAtMs,
+        candidatesComplete = _state.value.candidates.size < 50))
   }
 
-  private fun rescanNow() {
-    manualUntil = 0
-    lastPickFix = null
-    showMessage("Rescanning", "Finding the house you're facing…", IconName.TWO_ARROWS_CLOCKWISE)
-    locator.fix?.let { fix -> scope.launch { rescan(fix) } }
+  fun rescanNow() {
+    if (!_state.value.active) return
+    resolver.reset(); generation++
+    lookupJob?.cancel(); candidateJob?.cancel(); candidateGeneration++
+    _state.update { it.copy(target = TargetDecision(TargetKind.SEARCHING), assessment = null,
+        loading = false, message = "Rescanning nearby addresses…", candidates = emptyList()) }
+    candidateFix = null; lastRefreshAt = 0; lastHudKey = ""
+    locator.fix?.let(::refresh)
+    publishHud()
   }
 
-  private fun step(delta: Int) {
-    if (candidates.isEmpty()) return
-    manualUntil = System.currentTimeMillis() + MANUAL_HOLD_MS
-    index = (index + delta + candidates.size) % candidates.size
-    showCurrent()
+  fun select(site: AddressSite) {
+    if (!_state.value.active || site !in _state.value.candidates) return
+    resolver.hold(site, SystemClock.elapsedRealtime())
+    applyDecision(resolver.current(locator.fix, _state.value.candidates, SystemClock.elapsedRealtime(), cameraActive))
   }
 
-  private fun showCurrent() {
-    val site = candidates.getOrNull(index) ?: return
-    lookupJob?.cancel()
-    showMessage(site.fullAddress.substringBefore(","), "Pulling BC Assessment…", IconName.HOUSE)
-    lookupJob = scope.launch {
-      val result = withContext(Dispatchers.IO) { lookup(site) }
-      val fix = locator.fix
-      val dist = fix?.let {
-        HouseLocator.distanceM(it.latitude, it.longitude, site.latitude, site.longitude).toInt()
+  fun step(delta: Int) {
+    val sites = _state.value.candidates
+    if (sites.isEmpty()) return
+    val index = sites.indexOf(_state.value.target.site).coerceAtLeast(0)
+    select(sites[(index + delta + sites.size) % sites.size])
+  }
+
+  private fun refresh(fix: Fix) {
+    lastRefreshAt = SystemClock.elapsedRealtime()
+    val run = ++candidateGeneration
+    candidateJob = scope.launch {
+      try {
+        val radius = (70 + fix.accuracyM.toInt()).coerceIn(70, 150)
+        val sites = withContext(Dispatchers.IO) { geocoder.sitesNear(fix.latitude, fix.longitude, radius, 50) }
+        if (run != candidateGeneration || !_state.value.active) return@launch
+        candidateFix = fix; candidateFetchedAt = SystemClock.elapsedRealtime()
+        _state.update { it.copy(candidates = HouseLocator.rank(fix, sites),
+            message = if (sites.isEmpty()) "No nearby BC address. Move closer and rescan." else it.message) }
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        if (run == candidateGeneration) _state.update { it.copy(message = "Address service unavailable. Tap Rescan to retry.") }
       }
-      when (result) {
-        is Lookup.Found -> {
-          val listing = withContext(Dispatchers.IO) {
-            runCatching { listings.statusFor(site, result.assessment) }.getOrDefault(ListingStatus.Unknown)
+    }
+  }
+
+  private fun applyDecision(decision: TargetDecision) {
+    val old = _state.value.target
+    val changed = old.site?.fullAddress != decision.site?.fullAddress
+    _state.update { it.copy(target = decision) }
+    if (changed) {
+      val run = ++generation
+      lookupJob?.cancel()
+      _state.update { it.copy(assessment = null, loading = decision.site != null,
+          message = if (decision.site != null) "Looking up BC Assessment…" else when (decision.kind) {
+            TargetKind.UNCERTAIN -> "Several addresses fit. Aim at the number or select a house below."
+            TargetKind.LOCATION_WEAK -> "Location is weak. Step outside and enable precise location."
+            else -> "Aim toward a readable house number."
+          }) }
+      decision.site?.let { site ->
+        lookupJob = scope.launch {
+          val result = networkMutex.withLock {
+            withContext(Dispatchers.IO) { lookup(site) }
           }
-          val bitmap = HudRenderer.render(result.assessment, listing, dist)
-          send {
-            flexBox(direction = Direction.COLUMN, gap = 8) {
-              image(bitmap = bitmap, sizePreset = ImageSize.FILL, cornerRadius = CornerRadius.MEDIUM)
-              controls()
-            }
-          }
+          if (run != generation || !_state.value.active) return@launch
+          selectedListing = result.first?.let { p ->
+            withContext(Dispatchers.IO) { runCatching { listings.statusFor(site, p) }.getOrDefault(ListingStatus.Unknown) }
+          } ?: ListingStatus.Unknown
+          if (run != generation || !_state.value.active) return@launch
+          _state.update { it.copy(assessment = result.first, loading = false, message = result.second) }
+          publishHud()
         }
-        Lookup.MultiUnit ->
-            showMessage(site.fullAddress.substringBefore(","), "Multi-unit building. Each unit has its own assessment.", IconName.THREE_PEOPLE_OVERLAPPING)
-        Lookup.NotFound ->
-            showMessage(site.fullAddress.substringBefore(","), "No BC Assessment record found for this address.", IconName.HOUSE)
-        Lookup.Failed ->
-            showMessage(site.fullAddress.substringBefore(","), "BC Assessment didn't answer. Tap Rescan to retry.", IconName.TWO_ARROWS_CLOCKWISE)
       }
+    } else if (decision.site == null && decision.kind == TargetKind.LOCATION_WEAK) {
+      _state.update { it.copy(message = "Location is weak. Step outside and enable precise location.") }
     }
+    publishHud()
   }
 
-  private sealed interface Lookup {
-    data class Found(val assessment: PropertyAssessment) : Lookup
-    data object MultiUnit : Lookup
-    data object NotFound : Lookup
-    data object Failed : Lookup
-  }
-
-  private fun lookup(site: AddressSite): Lookup {
-    val key = site.fullAddress
-    if (cache.containsKey(key)) return cache[key]?.let { Lookup.Found(it) } ?: Lookup.NotFound
+  private fun lookup(site: AddressSite): Pair<PropertyAssessment?, String> {
+    cache[site.fullAddress]?.let { return it to "BC Assessment · cached this session" }
     return try {
-      val matches = assessments.search(site)
-      val match = matches.firstOrNull() ?: return Lookup.NotFound.also { cache[key] = null }
-      if (match.isMultiUnit) return Lookup.MultiUnit
+      val matches = assessments.search(site).filter { AddressIdentity.matches(site, it.label) }
+      if (matches.any { it.isMultiUnit }) return null to "Multi-unit building. Each unit has its own assessment."
+      val match = matches.distinctBy { it.oid }.singleOrNull()
+          ?: return null to "No unique assessment address match. Tap Rescan to retry."
       val info = assessments.propertyInfo(match.oid)
-      cache[key] = info
-      info?.let { Lookup.Found(it) } ?: Lookup.NotFound
-    } catch (t: Throwable) {
-      Log.w(TAG, "BC Assessment lookup failed", t)
-      Lookup.Failed
+          ?: return null to "Assessment unavailable. Tap Rescan to retry."
+      if (!AddressIdentity.matches(site, info.address)) return null to "Assessment address differs. Record withheld."
+      cache[site.fullAddress] = info
+      info to "BC Assessment · assessed value, not market price"
+    } catch (error: Exception) {
+      Log.w("HouseHud", "Assessment lookup failed", error)
+      null to "Assessment service unavailable. Tap Rescan to retry."
     }
   }
 
-  private fun showMessage(title: String, body: String, icon: IconName) {
-    send {
-      flexBox(direction = Direction.COLUMN, gap = 8) {
-        flexBox(padding = 24, gap = 8, background = FlexBoxBackground.CARD) {
-          flexBox(direction = Direction.ROW, gap = 12, crossAlignment = Alignment.CENTER) {
-            icon(name = icon)
-            text(title, style = TextStyle.HEADING)
-          }
-          text(body, style = TextStyle.BODY, color = TextColor.SECONDARY)
+  private fun publishHud() {
+    if (!_state.value.active) return
+    val s = _state.value
+    val key = "${s.target.kind}|${s.target.site?.fullAddress}|${s.assessment?.totalValue}|${s.loading}|${s.message}"
+    if (key == lastHudKey) return
+    lastHudKey = key
+    val p = s.assessment
+    if (p != null) {
+      val site = s.target.site
+      val fix = locator.fix
+      val distance = if (site != null && fix != null) HouseLocator.distanceM(fix.latitude, fix.longitude,
+          site.latitude, site.longitude).toInt() else null
+      val bitmap = HudRenderer.render(p, selectedListing, distance, s.target.kind.label)
+      send { flexBox(direction = Direction.COLUMN, gap = 8) {
+        image(bitmap = bitmap, sizePreset = ImageSize.FILL, cornerRadius = CornerRadius.MEDIUM)
+        controls()
+      } }
+    } else {
+      send { flexBox(direction = Direction.COLUMN, gap = 8) {
+        flexBox(padding = 20, gap = 8, background = FlexBoxBackground.CARD) {
+          text(s.target.kind.label, style = TextStyle.BODY, color = TextColor.SECONDARY)
+          text(s.target.site?.fullAddress?.substringBefore(",") ?: "BC House HUD", style = TextStyle.HEADING)
+          text(s.message, style = TextStyle.BODY, color = TextColor.SECONDARY)
         }
         controls()
-      }
+      } }
     }
   }
 
   private fun FlexBoxScope.controls() {
-    flexBox(direction = Direction.ROW, gap = 8, alignment = Alignment.CENTER, crossAlignment = Alignment.CENTER) {
+    flexBox(direction = Direction.ROW, gap = 8, alignment = Alignment.CENTER) {
       buttonGroup {
         button("Prev", style = ButtonStyle.SECONDARY, iconName = IconName.ARROW_LEFT, onClick = { scope.launch { step(-1) } })
         button("Rescan", style = ButtonStyle.PRIMARY, iconName = IconName.TWO_ARROWS_CLOCKWISE, onClick = { scope.launch { rescanNow() } })

@@ -11,20 +11,15 @@ Built on Meta's [DisplayAccess sample](https://github.com/facebook/meta-wearable
 session first, attach Display after `STARTED`, send content only after `DisplayState.STARTED`,
 one root view per `sendContent`, images kept under 600x600.
 
-## How it works
+## Camera + location targeting
 
-1. **Where you are and which way you face.** Phone GPS plus the phone's compass
-   (`HouseLocator`). Keep the phone facing the same way you do (in hand, or chest pocket
-   screen-out). With no compass reading it falls back to the nearest address.
-2. **Which house.** The free [BC Address Geocoder](https://www2.gov.bc.ca/gov/content/data/geographic-data-services/location-services/geocoder)
-   returns civic addresses within 70 m; the one inside a ~35° cone of your heading wins.
-3. **The record.** `BcAssessmentClient` does what the public bcassessment.ca search page does
-   (session cookie, address search, property information) and `BcAssessmentParser` reads it.
-   Results are cached; only the house you are looking at is fetched.
-4. **The HUD.** `HudRenderer` draws a 560x360 colour bitmap (black is see-through on the
-   glasses) and the controller sends it with **Prev / Rescan / Next** buttons, which you drive
-   with the touchpad or Neural Band. The HUD follows you: walk 12 m or turn 25° and it
-   re-picks, unless you just used Prev/Next (then it holds for 20 s).
+The redesigned **House lens** scanner combines the phone's GPS with live frames from the glasses. Start scanning, grant Meta camera access, and aim the visible house number inside the guide. Bundled on-device text recognition tags address text; frames are not recorded or uploaded.
+
+Nearby BC civic addresses constrain the number matches. Three consistent observations within two seconds produce a **Visual match**. Conflicting numbers, duplicate addresses, stale GPS and expired camera evidence lower certainty. **Nearby estimate** means geographic ranking only; **Manually selected** holds your choice for 20 seconds. The camera follows head direction, not eye gaze, and unreadable house numbers cannot be identified exactly. No glasses GPS feed is assumed.
+
+The phone shows the camera preview, recognition boxes, GPS accuracy, nearby addresses and property details. The glasses card carries the same identification status. Stop scanning before leaving the app; this version stops camera processing in the background. Phone preview displays the HUD without a real glasses camera.
+
+BC Assessment search and returned records are checked against civic number, street, direction and locality. Ambiguous or mismatched records are withheld. Lookups are cached only for selected addresses; nearby assessments are not bulk fetched.
 
 ## For-sale status
 
@@ -48,8 +43,18 @@ In Developer Mode no credentials are needed. For a release build, put
 `mwdat_application_id` and `mwdat_client_token` from Wearables Developer Center in
 `local.properties`.
 
-Open the app, tap **Connect my glasses**, allow Bluetooth and location, then **Samples ›
-BC house HUD › Try it**. Use **Developer preview** to test on the phone without glasses.
+Open **House lens**, tap **Connect glasses** and register through Meta AI, then return to **Scan** and tap **Start scanning**. Allow precise location, nearby devices, and camera access. Use **Preview on phone** to test the glasses HUD without glasses (no real vision input).
+
+### Field test checklist
+
+- Look between adjacent numbered houses while the phone faces another direction.
+- Confirm a readable number becomes a visual match and its assessment address agrees.
+- Check duplicate numbers on different streets stay uncertain without street evidence.
+- Cover the number or pause/disconnect the camera; the match must lose its active label.
+- Select a nearby address manually; it remains held for 20 seconds.
+- Test blur/night, weak GPS, multi-unit buildings, denied permissions and network loss.
+
+Build and JVM tests do not verify camera behavior on physical glasses. Measure hardware latency and accuracy during these field tests; no accuracy percentage is claimed.
 
 ## Notes
 

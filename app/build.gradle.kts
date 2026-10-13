@@ -33,8 +33,8 @@ android {
     applicationId = "com.nonilion.bchousehud"
     minSdk = 31
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "1.1"
 
     // Meta Wearables Device Access Toolkit Setup
     manifestPlaceholders["mwdat_application_id"] =
@@ -69,6 +69,9 @@ dependencies {
   implementation(libs.androidx.material3)
   implementation(libs.androidx.navigation.compose)
   implementation(libs.mwdat.core)
+  implementation(libs.mwdat.camera)
+  implementation("com.google.mlkit:text-recognition:16.0.1")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
   implementation(libs.mwdat.display)
   implementation(libs.mwdat.mockdevice)
   testImplementation("junit:junit:4.13.2")

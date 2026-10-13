@@ -5,7 +5,7 @@
     <string name="settings_title" description="Settings screen title">Settings</string>
     <string name="system_section" description="System section title">System</string>
     <string name="devices_section" description="Devices section title">Devices</string>
-    <string name="samples_tab" description="Samples tab label">Samples</string>
+    <string name="samples_tab" description="Samples tab label">Scan</string>
     <string name="settings_tab" description="Settings tab label">Settings</string>
     <string name="no_devices_found" description="No devices text">No devices found</string>
 

@@ -53,12 +53,12 @@ import com.meta.wearable.dat.core.types.RegistrationState
 import com.meta.wearable.dat.externalsampleapps.displayaccess.R
 import com.meta.wearable.dat.externalsampleapps.displayaccess.wearables.WearablesUiState
 
-private val ScreenBackground = Color(0xFFF2F2F7)
-private val CardBackground = Color.White
-private val SectionLabel = Color(0xFF8E8E93)
+private val ScreenBackground = Color(0xFF0B1B23)
+private val CardBackground = Color(0xFF142633)
+private val SectionLabel = Color(0xFF97A9B7)
 private val ConnectedColor = Color(0xFF67C46A)
 private val DisconnectedColor = Color(0xFFFF5E57)
-private val DividerColor = Color(0xFFE5E5EA)
+private val DividerColor = Color(0xFF334653)
 private val CompatibilityIssueBackground = Color(0xFFFFF4D6)
 private val CompatibilityIssueColor = Color(0xFF8A4B00)
 
