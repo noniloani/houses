@@ -191,7 +191,7 @@ private fun PropertyCard(scan: HouseScanState) {
   Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Panel).padding(20.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text("PROPERTY SNAPSHOT", color = Muted, fontSize = 10.sp, letterSpacing = 1.6.sp, fontWeight = FontWeight.Bold)
-    Text(scan.target.site?.fullAddress?.substringBefore(",") ?: "Your next discovery", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+    Text(scan.selectedUnit?.address?.substringBefore(",") ?: scan.target.site?.fullAddress?.substringBefore(",") ?: "Your next discovery", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
     val p = scan.assessment
     if (p != null) {
       Text(p.totalValue?.let(HudRenderer::money) ?: "Value unavailable", color = Mint, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)

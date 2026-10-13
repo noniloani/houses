@@ -33,8 +33,8 @@ android {
     applicationId = "com.nonilion.bchousehud"
     minSdk = 31
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1"
+    versionCode = 3
+    versionName = "1.2"
 
     // Meta Wearables Device Access Toolkit Setup
     manifestPlaceholders["mwdat_application_id"] =

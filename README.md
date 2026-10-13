@@ -17,9 +17,9 @@ The redesigned **House lens** scanner combines the phone's GPS with live frames 
 
 Nearby BC civic addresses constrain the number matches. Three consistent observations within two seconds produce a **Visual match**. Conflicting numbers, duplicate addresses, stale GPS and expired camera evidence lower certainty. **Nearby estimate** means geographic ranking only; **Manually selected** holds your choice for 20 seconds. The camera follows head direction, not eye gaze, and unreadable house numbers cannot be identified exactly. No glasses GPS feed is assumed.
 
-The phone shows the camera preview, recognition boxes, GPS accuracy, nearby addresses and property details. The glasses card carries the same identification status. Stop scanning before leaving the app; this version stops camera processing in the background. Phone preview displays the HUD without a real glasses camera.
+The phone shows the camera preview, recognition boxes, GPS accuracy, nearby addresses and property details. The glasses card carries the same identification status. Scanning continues when the phone is locked or pocketed through a foreground service. Stop with the app button or the scanning notification. Display updates are serialized and the most recent card is replayed after automatic reconnection. Phone preview displays the HUD without a real glasses camera.
 
-BC Assessment search and returned records are checked against civic number, street, direction and locality. Ambiguous or mismatched records are withheld. Lookups are cached only for selected addresses; nearby assessments are not bulk fetched.
+BC Assessment search and returned records are checked against civic number, street, direction and locality. Strata buildings open a paged unit picker in the glasses. Select a unit with the glasses controls to load its assessment; Units returns to the list and Buildings selects another nearby building. A selected unit holds the building until you leave that view. Rental buildings assessed as one property have no invented per-unit values. Ambiguous or mismatched records are withheld. Lookups are cached only for selected addresses; nearby assessments are not bulk fetched.
 
 ## For-sale status
 

@@ -219,13 +219,22 @@ fun AppScaffold(
             chromePreviewUrl = chromePreviewInfo?.url,
             developerPreviewErrorMessage =
                 developerPreviewErrorMessage ?: displayState.errorMessage,
-            onSampleSelected = { displayViewModel.startScanning(onRequestCameraPermission) },
+            onSampleSelected = {
+              coroutineScope.launch {
+                if (developerPreviewMode != null) {
+                  displayViewModel.stopSession()
+                  wearablesViewModel.setDeveloperPreviewMode(null)
+                }
+                displayViewModel.startScanning(onRequestCameraPermission)
+              }
+            },
             onStartDeveloperPreview = ::updateDeveloperPreview,
             onStopDeveloperPreview = { updateDeveloperPreview(null) },
             previewDisplayKit = previewDisplayKit,
             scan = scanState,
             vision = visionState,
-            connected = wearablesState.registrationState == RegistrationState.REGISTERED,
+            connected = wearablesState.registrationState == RegistrationState.REGISTERED &&
+                wearablesState.devicesMetadata.values.any { it.linkState == com.meta.wearable.dat.core.types.LinkState.CONNECTED && it.isDisplayCapable() },
             onStopScanning = { coroutineScope.launch { displayViewModel.stopSession() } },
             onRescan = displayViewModel::rescanHouse,
             onSelect = displayViewModel::selectHouse,

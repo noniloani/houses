@@ -24,7 +24,7 @@ class BcGeocoderClient(private val baseUrl: String = "https://geocoder.api.gov.b
   fun sitesNear(latitude: Double, longitude: Double, maxDistanceM: Int, maxResults: Int): List<AddressSite> {
     val url =
         "$baseUrl/sites/near.json?point=$longitude,$latitude&maxDistance=$maxDistanceM" +
-            "&maxResults=$maxResults&outputSRS=4326&locationDescriptor=parcelPoint"
+            "&maxResults=$maxResults&outputSRS=4326&locationDescriptor=parcelPoint&excludeUnits=true&onlyCivic=true"
     val conn = URL(url).openConnection() as HttpURLConnection
     conn.connectTimeout = 10_000
     conn.readTimeout = 15_000

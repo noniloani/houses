@@ -8,7 +8,7 @@ import java.net.URLEncoder
 import org.json.JSONArray
 
 /** One address match from BC Assessment's address search. */
-data class AssessmentMatch(val label: String, val oid: String, val isMultiUnit: Boolean)
+data class AssessmentMatch(val label: String, val oid: String, val isMultiUnit: Boolean, val groupId: String? = null)
 
 /**
  * Looks up properties on bcassessment.ca the same way its public search page does:
@@ -46,6 +46,15 @@ class BcAssessmentClient(private val baseUrl: String = "https://www.bcassessment
       return inTown.ifEmpty { matches }
     }
     return emptyList()
+  }
+
+  /** Same selected-building endpoint used by BC Assessment's public unit selector. */
+  fun units(groupId: String): UnitDirectory {
+    require(Regex("\\d+").matches(groupId)) { "Invalid building ID" }
+    bootstrap()
+    val body = request("$baseUrl/Property/Search/GetSubUnits/${enc(groupId)}?multiunitId=${enc(groupId)}", "$baseUrl/")
+        ?: throw java.io.IOException("Unit list unavailable")
+    return UnitDirectory.parse(body)
   }
 
   /** The parsed assessment for a BC Assessment property id, or null. */
@@ -127,7 +136,8 @@ class BcAssessmentClient(private val baseUrl: String = "https://www.bcassessment
                 val multiUnit = label.contains("all units", ignoreCase = true)
                 when {
                   label.equals("No results", true) -> null
-                  multiUnit -> AssessmentMatch(label.substringBefore(" (").trim(), "", true)
+                  multiUnit -> AssessmentMatch(label.substringBefore(" (").trim(), "", true,
+                      o.optString("gid").takeUnless { it.isBlank() || it == "null" || it == "0" })
                   value.isBlank() || value == "0" -> null
                   else -> AssessmentMatch(label, value, false)
                 }

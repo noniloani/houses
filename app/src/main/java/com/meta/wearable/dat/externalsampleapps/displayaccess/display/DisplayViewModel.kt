@@ -56,6 +56,9 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.update
+import com.meta.wearable.dat.externalsampleapps.displayaccess.scan.ScanService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -261,11 +264,71 @@ class DisplayViewModel(
   fun rescanHouse() = houseHud.rescanNow()
   fun selectHouse(site: AddressSite) = houseHud.select(site)
 
-  fun pauseScanning() {
-    // A permission redirect occurs before the scan starts; allow it to complete on return.
-    if (scanState.value.active || _uiState.value.isStartingSession) {
-      cameraRequested = false
-      viewModelScope.launch { stopSession() }
+  private var scanWanted = false
+  private var recoveryJob: Job? = null
+  private var startupWatchdog: Job? = null
+  private var recoveryAttempts = 0
+  private var lastSelector: DeviceSelector? = null
+  private var lastSelectedDeviceId: DeviceIdentifier? = null
+  private val contentSender = LatestContentSender<ContentScope.() -> Unit>(viewModelScope) { content ->
+    val current = synchronized(sessionLock) { display }
+    if (current == null || _uiState.value.displayState != DisplayState.STARTED) false
+    else {
+      _uiState.update { it.copy(isSending = true) }
+      try {
+        val result = current.sendContent(content)
+        var succeeded = false
+        result.fold(onSuccess = {
+          if (current === synchronized(sessionLock) { display }) {
+            recoveryAttempts = 0
+            _uiState.update { it.copy(isSending = false, hasSentContent = true, errorMessage = null) }
+            succeeded = true
+          }
+        }, onFailure = { error, _ ->
+          _uiState.update { it.copy(isSending = false, errorMessage = error.description) }
+          scheduleRecovery("HUD send failed: ${error.description}")
+        })
+        succeeded
+      } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        _uiState.update { it.copy(isSending = false, errorMessage = error.message) }
+        scheduleRecovery("HUD transport interrupted")
+        false
+      }
+    }
+  }
+
+  private fun scheduleRecovery(reason: String) {
+    if (!scanWanted || recoveryJob?.isActive == true) return
+    contentSender.disconnected()
+    if (recoveryAttempts >= 5) {
+      viewModelScope.launch {
+        stopSession()
+        _uiState.update { it.copy(errorMessage = "Glasses could not reconnect. Check the Meta AI connection and start again.") }
+      }
+      return
+    }
+    val waitMs = listOf(1000L,2000L,4000L,8000L,15000L)[recoveryAttempts++]
+    _uiState.update { it.copy(isPreparingDisplay = true, snackbarMessage = "$reason · reconnecting") }
+    recoveryJob = viewModelScope.launch {
+      delay(waitMs)
+      if (!scanWanted) return@launch
+      val selector = lastSelector ?: return@launch
+      startupWatchdog?.cancel()
+      vision.stop()
+      clearSessionStateJob()?.cancel(); clearSessionErrorJob()?.cancel()
+      val old = synchronized(sessionLock) { session }
+      old?.removeDisplay(); cleanupDisplay()
+      clearSession()?.stop()
+      _uiState.update { it.copy(isSessionActive = false, isDisplayAttached = false, displayState = null,
+          isStartingSession = false, hasSentContent = false) }
+      synchronized(sessionLock) {
+        pendingDisplayAttachment = true
+        pendingSample = if (scanState.value.active) null else SampleApp.BC_HOUSE_HUD
+      }
+      // Clear the running-job gate before a synchronous create/attach failure schedules another try.
+      recoveryJob = null
+      startSession(selector, lastSelectedDeviceId)
     }
   }
 
@@ -275,6 +338,15 @@ class DisplayViewModel(
       deviceSelector: DeviceSelector,
       selectedDeviceId: DeviceIdentifier?,
   ) {
+    lastSelector = deviceSelector
+    lastSelectedDeviceId = selectedDeviceId
+    startupWatchdog?.cancel()
+    startupWatchdog = viewModelScope.launch {
+      delay(15000)
+      if (scanWanted && (!_uiState.value.isSessionActive || _uiState.value.displayState != DisplayState.STARTED || !_uiState.value.hasSentContent)) {
+        scheduleRecovery("Glasses display timed out")
+      }
+    }
     Log.d(TAG, "Starting DAT session")
     _uiState.value =
         _uiState.value.copy(
@@ -294,9 +366,12 @@ class DisplayViewModel(
 
           val stateJob =
               viewModelScope.launch(sessionObserverExceptionHandler) {
+                var hasStarted = false
                 newSession.state.collect { state ->
+                  if (newSession !== synchronized(sessionLock) { session }) return@collect
                   when (state) {
                     DeviceSessionState.STARTED -> {
+                      hasStarted = true
                       Log.i(TAG, "Session started")
                       _uiState.value =
                           _uiState.value.copy(
@@ -313,8 +388,10 @@ class DisplayViewModel(
                     }
                     DeviceSessionState.STOPPED -> {
                       Log.i(TAG, "Session stopped")
+                      if (!hasStarted && _uiState.value.isStartingSession) return@collect
                       vision.stop()
-                      houseHud.stop()
+                      contentSender.disconnected()
+                      if (!scanWanted) houseHud.stop()
                       clearPendingWork()
                       cleanupDisplay()
                       _uiState.value =
@@ -331,6 +408,7 @@ class DisplayViewModel(
                               displayState = null,
                               snackbarMessage = "Session stopped",
                           )
+                      scheduleRecovery("Glasses disconnected")
                     }
                     else -> {}
                   }
@@ -340,7 +418,9 @@ class DisplayViewModel(
 
           val errorJob =
               viewModelScope.launch(sessionObserverExceptionHandler) {
-                newSession.errors.collect { error -> handleSessionError(error) }
+                newSession.errors.collect { error ->
+                  if (newSession === synchronized(sessionLock) { session }) handleSessionError(error)
+                }
               }
           replaceSessionErrorJob(errorJob)
 
@@ -362,6 +442,7 @@ class DisplayViewModel(
                   errorMessage = error.description,
                   snackbarMessage = "Failed: ${error.description}",
               )
+          if (error != DeviceSessionError.DAT_APP_ON_THE_GLASSES_UPDATE_REQUIRED) scheduleRecovery(error.description)
         },
     )
   }
@@ -433,6 +514,7 @@ class DisplayViewModel(
                   viewModelScope.launch(displayObserverExceptionHandler) {
                     var hasStarted = false
                     newDisplay.state.collect { state ->
+                      if (newDisplay !== synchronized(sessionLock) { display }) return@collect
                       Log.i(TAG, "Display state: $state")
                       _uiState.value =
                           _uiState.value.copy(
@@ -447,7 +529,11 @@ class DisplayViewModel(
                                 isPreparingDisplay = false,
                                 snackbarMessage = "Display ready",
                             )
+                        contentSender.ready()
                         sendPendingSample()
+                        if (scanState.value.active && cameraRequested && !vision.isAttached) {
+                          synchronized(sessionLock) { session }?.let(vision::start)
+                        }
                       }
                       if (state == DisplayState.STOPPED && hasStarted) {
                         _uiState.value =
@@ -455,6 +541,8 @@ class DisplayViewModel(
                                 isPreparingDisplay = false,
                                 snackbarMessage = "Display session stopped",
                             )
+                        contentSender.disconnected()
+                        scheduleRecovery("Glasses display stopped")
                       }
                     }
                   }
@@ -471,6 +559,7 @@ class DisplayViewModel(
                       errorMessage = error.description,
                       snackbarMessage = "Failed: ${error.description}",
                   )
+              scheduleRecovery("Could not attach glasses display")
             },
         )
   }
@@ -478,48 +567,7 @@ class DisplayViewModel(
   // -- Content --
 
   private fun sendContent(content: ContentScope.() -> Unit) {
-    _uiState.value =
-        _uiState.value.copy(
-            isSending = true,
-            hasSentContent = false,
-            errorMessage = null,
-        )
-    viewModelScope.launch(dispatcher + sendContentExceptionHandler) {
-      val currentDisplay =
-          synchronized(sessionLock) { display }
-              ?: run {
-                _uiState.value =
-                    _uiState.value.copy(
-                        isSending = false,
-                        hasSentContent = false,
-                        errorMessage = "No display attached",
-                        snackbarMessage = "No display attached",
-                    )
-                return@launch
-              }
-
-      val result = currentDisplay.sendContent(content)
-      result.fold(
-          onSuccess = {
-            _uiState.value =
-                _uiState.value.copy(
-                    isSending = false,
-                    hasSentContent = true,
-                    errorMessage = null,
-                    snackbarMessage = "Content sent",
-                )
-          },
-          onFailure = { error, _ ->
-            _uiState.value =
-                _uiState.value.copy(
-                    isSending = false,
-                    hasSentContent = false,
-                    errorMessage = error.description,
-                    snackbarMessage = "Send failed: ${error.description}",
-                )
-          },
-      )
-    }
+    contentSender.submit(content)
   }
 
   // -- Sample management --
@@ -527,7 +575,7 @@ class DisplayViewModel(
   fun sendSampleToDisplay(sample: SampleApp) {
     queueOrSendSample(
         sample = sample,
-        deviceSelector = AutoDeviceSelector(filter = { it.isDisplayCapable() }),
+        deviceSelector = AutoDeviceSelector(filter = { it.isDisplayCapable() && it.linkState == com.meta.wearable.dat.core.types.LinkState.CONNECTED }),
         selectedDeviceId = null,
     )
   }
@@ -550,6 +598,13 @@ class DisplayViewModel(
       deviceSelector: DeviceSelector,
       selectedDeviceId: DeviceIdentifier?,
   ) {
+    if (sample == SampleApp.BC_HOUSE_HUD) {
+      scanWanted = true
+      if (androidx.core.content.ContextCompat.checkSelfPermission(getApplication(),
+          android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        ScanService.start(getApplication()) { viewModelScope.launch { stopSession() } }
+      }
+    }
     if (_uiState.value.displayState == DisplayState.STARTED) {
       sendSampleContent(sample)
       return
@@ -578,8 +633,8 @@ class DisplayViewModel(
     Log.i(TAG, "Sending sample to display: ${sample.name}")
     when (sample) {
       SampleApp.BC_HOUSE_HUD -> {
-        houseHud.start()
-        if (cameraRequested && scanState.value.active) {
+        if (!scanState.value.active) houseHud.start()
+        if (cameraRequested && scanState.value.active && !vision.isAttached) {
           synchronized(sessionLock) { session }?.let(vision::start)
         }
       }
@@ -608,12 +663,18 @@ class DisplayViewModel(
   }
 
   suspend fun stopSession(): Boolean {
-    return withContext(dispatcher) { stopSessionImmediately() }
+    return withContext(Dispatchers.Main.immediate) { stopSessionImmediately() }
   }
 
   private fun stopSessionImmediately(): Boolean {
     return try {
       Log.d(TAG, "Stopping session")
+      scanWanted = false
+      recoveryJob?.cancel(); recoveryJob = null
+      startupWatchdog?.cancel(); startupWatchdog = null
+      scanStartJob?.cancel()
+      contentSender.clear()
+      ScanService.stop(getApplication())
       vision.stop()
       houseHud.stop()
       cameraRequested = false
@@ -673,8 +734,8 @@ class DisplayViewModel(
   private fun handleSessionError(error: DeviceSessionError) {
     Log.e(TAG, "Session error: ${error.description}")
     vision.stop()
-    houseHud.stop()
-    cameraRequested = false
+    contentSender.disconnected()
+    if (!scanWanted) houseHud.stop()
     clearPendingWork()
     cleanupDisplay()
     clearSessionStateJob()?.cancel()
@@ -696,6 +757,7 @@ class DisplayViewModel(
             errorMessage = error.description,
             snackbarMessage = error.description,
         )
+    if (error != DeviceSessionError.DAT_APP_ON_THE_GLASSES_UPDATE_REQUIRED) scheduleRecovery(error.description)
   }
 
   private fun displayCarMaintenanceScreen() {
@@ -879,8 +941,9 @@ class DisplayViewModel(
   }
 
   override fun onCleared() {
-    super.onCleared()
     stopSessionImmediately()
+    contentSender.close()
+    super.onCleared()
   }
 
   private fun consumePendingDisplayAttachment(): Boolean =

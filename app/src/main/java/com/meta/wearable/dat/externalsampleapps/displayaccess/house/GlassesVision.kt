@@ -34,6 +34,7 @@ class GlassesVision(
   private val _state = MutableStateFlow(VisionState())
   val state = _state.asStateFlow()
   private var camera: Camera? = null
+  val isAttached get() = camera != null
   private var session: DeviceSession? = null
   private var job: Job? = null
   private var generation = 0L
@@ -57,7 +58,7 @@ class GlassesVision(
     var lastFrameAt = 0L
     _state.value = VisionState(label = "Starting camera")
     deviceSession.addCamera(StreamConfiguration(videoQuality = VideoQuality.MEDIUM,
-        frameRate = 7, compressVideo = false)).fold(
+        frameRate = 2, compressVideo = false)).fold(
       onSuccess = { added ->
         camera = added
         val stream = added.stream

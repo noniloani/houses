@@ -23,7 +23,8 @@ class MainActivity : ComponentActivity() {
   private val displayViewModel: DisplayViewModel by viewModels()
   private var initialized = false
   private val requiredPermissions = arrayOf(Manifest.permission.BLUETOOTH_CONNECT,
-      Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.CAMERA)
+      Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.CAMERA) +
+      if (android.os.Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()
   private val permissionsLauncher = registerForActivityResult(RequestMultiplePermissions()) {
     initializeWearables()
   }
@@ -62,8 +63,4 @@ class MainActivity : ComponentActivity() {
     } else permissionsLauncher.launch(requiredPermissions)
   }
 
-  override fun onStop() {
-    super.onStop()
-    displayViewModel.pauseScanning()
-  }
 }

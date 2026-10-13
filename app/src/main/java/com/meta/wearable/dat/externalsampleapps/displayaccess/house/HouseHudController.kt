@@ -17,6 +17,9 @@ data class HouseScanState(
     val locationAccuracyM: Float? = null,
     val locationAgeMs: Long? = null,
     val loading: Boolean = false,
+    val units: List<UnitRecord> = emptyList(),
+    val selectedUnit: UnitRecord? = null,
+    val unitPickerVisible: Boolean = false,
     val message: String = "Start scanning to find a house",
 )
 
@@ -32,6 +35,8 @@ class HouseHudController(
   private val geocoder = BcGeocoderClient()
   private val assessments = BcAssessmentClient()
   private val resolver = TargetResolver()
+  private val unitBrowser = UnitBrowser()
+  private var unitPickerVisible = false
   private val _state = MutableStateFlow(HouseScanState())
   val state = _state.asStateFlow()
   private val cache = object : LinkedHashMap<String, PropertyAssessment>(64, .75f, true) {
@@ -97,9 +102,10 @@ class HouseHudController(
     generation++; candidateGeneration++
     followJob?.cancel(); candidateJob?.cancel(); lookupJob?.cancel()
     followJob = null; candidateJob = null; lookupJob = null
-    locator.stop(); resolver.reset()
+    locator.stop(); resolver.reset(); unitBrowser.close(); unitPickerVisible = false; buildingMenuVisible = false
     candidateFix = null; candidateFetchedAt = 0; lastRefreshAt = 0
     cameraActive = false; lastHudKey = ""
+    buildingChoices = emptyList(); buildingPage = 0
     _state.value = HouseScanState()
   }
 
@@ -117,17 +123,22 @@ class HouseHudController(
 
   fun rescanNow() {
     if (!_state.value.active) return
-    resolver.reset(); generation++
+    resolver.reset(); generation++; unitBrowser.close(); unitPickerVisible = false; buildingMenuVisible = false
     lookupJob?.cancel(); candidateJob?.cancel(); candidateGeneration++
     _state.update { it.copy(target = TargetDecision(TargetKind.SEARCHING), assessment = null,
-        loading = false, message = "Rescanning nearby addresses…", candidates = emptyList()) }
+        loading = false, message = "Rescanning nearby addresses…", candidates = emptyList(),
+        units = emptyList(), selectedUnit = null, unitPickerVisible = false) }
     candidateFix = null; lastRefreshAt = 0; lastHudKey = ""
     locator.fix?.let(::refresh)
     publishHud()
   }
 
   fun select(site: AddressSite) {
-    if (!_state.value.active || site !in _state.value.candidates) return
+    if (!_state.value.active || (site !in _state.value.candidates && site !in buildingChoices)) return
+    unitBrowser.close(); unitPickerVisible = false; buildingMenuVisible = false
+    // Force a new selected-building lookup, even when reselecting the same building.
+    _state.update { it.copy(target = TargetDecision(TargetKind.SEARCHING), assessment = null) }
+    _state.update { it.copy(units = emptyList(), selectedUnit = null, unitPickerVisible = false) }
     resolver.hold(site, SystemClock.elapsedRealtime())
     applyDecision(resolver.current(locator.fix, _state.value.candidates, SystemClock.elapsedRealtime(), cameraActive))
   }
@@ -158,6 +169,8 @@ class HouseHudController(
   }
 
   private fun applyDecision(decision: TargetDecision) {
+    // A glasses unit selection is an explicit building lock, until Buildings/Rescan is chosen.
+    if (unitBrowser.isOpen || buildingMenuVisible) return
     val old = _state.value.target
     val changed = old.site?.fullAddress != decision.site?.fullAddress
     _state.update { it.copy(target = decision) }
@@ -181,6 +194,13 @@ class HouseHudController(
           } ?: ListingStatus.Unknown
           if (run != generation || !_state.value.active) return@launch
           _state.update { it.copy(assessment = result.first, loading = false, message = result.second) }
+          val directory = result.third
+          if (directory != null && directory.units.isNotEmpty()) {
+            unitBrowser.open(site, directory)
+            unitPickerVisible = true
+            _state.update { it.copy(target = TargetDecision(TargetKind.BUILDING_HELD, site), units = directory.units, unitPickerVisible = true,
+                message = "Choose a unit in your glasses. Building held until you return to Buildings.") }
+          }
           publishHud()
         }
       }
@@ -190,37 +210,145 @@ class HouseHudController(
     publishHud()
   }
 
-  private fun lookup(site: AddressSite): Pair<PropertyAssessment?, String> {
-    cache[site.fullAddress]?.let { return it to "BC Assessment · cached this session" }
+  private fun lookup(site: AddressSite): Triple<PropertyAssessment?, String, UnitDirectory?> {
+    cache[site.fullAddress]?.let { return Triple(it, "BC Assessment · cached this session", null) }
     return try {
-      val matches = assessments.search(site).filter { AddressIdentity.matches(site, it.label) }
-      if (matches.any { it.isMultiUnit }) return null to "Multi-unit building. Each unit has its own assessment."
+      val raw = assessments.search(site)
+      val matches = raw.filter { AddressIdentity.matches(site, it.label) }
+      val group = matches.firstOrNull { it.isMultiUnit && it.groupId != null }
+      if (group?.groupId != null) {
+        val result = assessments.units(group.groupId)
+        val directory = result.copy(units = result.units.filter { UnitDirectory.belongsTo(site, it.address) })
+        return Triple(null, if (directory.units.isEmpty()) "No matching individual unit assessments were returned." else "Select a unit on the glasses.", directory)
+      }
+      val individualUnits = raw.filter { !it.isMultiUnit && UnitDirectory.belongsTo(site, it.label) }
+          .map { UnitRecord(it.oid,it.label,it.label.substringBefore('-').trim()) }.distinctBy { it.oid }
+      if (individualUnits.isNotEmpty()) return Triple(null, "Select a unit on the glasses.",
+          UnitDirectory(individualUnits,individualUnits.size,true))
+      if (matches.any { it.isMultiUnit }) return Triple(null, "This building's unit directory is unavailable. Tap Rescan to retry.",null)
       val match = matches.distinctBy { it.oid }.singleOrNull()
-          ?: return null to "No unique assessment address match. Tap Rescan to retry."
+          ?: return Triple(null,"No unique assessment address match. Tap Rescan to retry.",null)
       val info = assessments.propertyInfo(match.oid)
-          ?: return null to "Assessment unavailable. Tap Rescan to retry."
-      if (!AddressIdentity.matches(site, info.address)) return null to "Assessment address differs. Record withheld."
+          ?: return Triple(null,"Assessment unavailable. Tap Rescan to retry.",null)
+      if (!AddressIdentity.matches(site, info.address)) return Triple(null,"Assessment address differs. Record withheld.",null)
       cache[site.fullAddress] = info
-      info to "BC Assessment · assessed value, not market price"
+      Triple(info,"BC Assessment · assessed value, not market price",null)
     } catch (error: Exception) {
       Log.w("HouseHud", "Assessment lookup failed", error)
-      null to "Assessment service unavailable. Tap Rescan to retry."
+      Triple(null,"Assessment service unavailable. Tap Rescan to retry.",null)
     }
+  }
+
+  fun showUnits() {
+    if (!unitBrowser.isOpen) return
+    unitPickerVisible = true
+    _state.update { it.copy(unitPickerVisible = true) }
+    lastHudKey = ""; publishHud()
+  }
+
+  private fun chooseUnit(oid: String) {
+    val unit = unitBrowser.choose(oid) ?: return
+    val building = unitBrowser.building ?: return
+    val run = ++generation
+    lookupJob?.cancel()
+    unitPickerVisible = false
+    _state.update { it.copy(target = TargetDecision(TargetKind.MANUAL, building), selectedUnit = unit, unitPickerVisible = false, assessment = null,
+        loading = true, message = "Loading unit ${unit.number}…") }
+    lastHudKey = ""; publishHud()
+    lookupJob = scope.launch {
+      val key = "unit:${unit.oid}"
+      val result = networkMutex.withLock { withContext(Dispatchers.IO) {
+        try {
+          val record = cache[key] ?: assessments.propertyInfo(unit.oid)
+          if (record != null && UnitDirectory.belongsTo(building, record.address) &&
+              UnitDirectory.sameUnit(unit.address, record.address)) {
+            cache[key] = record
+            record to "BC Assessment · unit ${unit.number} · assessed value"
+          } else null to "No matching record for this unit. Choose another unit or retry."
+        } catch (error: Exception) { null to "Unit assessment unavailable. Choose Units to retry." }
+      } }
+      if (run != generation || !_state.value.active || _state.value.selectedUnit?.oid != oid) return@launch
+      selectedListing = ListingStatus.Unknown
+      _state.update { it.copy(assessment = result.first, loading = false, message = result.second) }
+      publishHud()
+    }
+  }
+
+  private var buildingMenuVisible = false
+  private var buildingChoices: List<AddressSite> = emptyList()
+  private var buildingPage = 0
+
+  private fun showBuildings() {
+    val currentBuilding = unitBrowser.building ?: _state.value.target.site
+    buildingChoices = (listOfNotNull(currentBuilding) + _state.value.candidates).distinctBy { it.fullAddress }
+    buildingPage = 0
+    generation++; lookupJob?.cancel(); unitBrowser.close(); unitPickerVisible = false
+    resolver.reset()
+    _state.update { it.copy(units = emptyList(), selectedUnit = null, unitPickerVisible = false,
+        assessment = null, loading = false, message = "Choose the building you're looking at in your glasses.") }
+    buildingMenuVisible = true
+    lastHudKey = ""; publishHud()
   }
 
   private fun publishHud() {
     if (!_state.value.active) return
     val s = _state.value
-    val key = "${s.target.kind}|${s.target.site?.fullAddress}|${s.assessment?.totalValue}|${s.loading}|${s.message}"
+    val key = "${buildingMenuVisible}|${buildingPage}|${unitPickerVisible}|${unitBrowser.page}|${s.selectedUnit?.oid}|${s.target.kind}|${s.target.site?.fullAddress}|${s.assessment?.totalValue}|${s.loading}|${s.message}"
     if (key == lastHudKey) return
     lastHudKey = key
+    if (buildingMenuVisible) {
+      val pages = ((buildingChoices.size + 3) / 4).coerceAtLeast(1)
+      val page = buildingPage
+      val choices = buildingChoices.drop(page * 4).take(4)
+      send { flexBox(direction = Direction.COLUMN, gap = 6, padding = 12) {
+        text("Choose building · ${page + 1}/$pages", style = TextStyle.HEADING)
+        if (choices.isEmpty()) text("No nearby addresses. Tap Rescan.", style = TextStyle.BODY)
+        choices.forEach { site -> button(site.fullAddress.substringBefore(","), style = ButtonStyle.SECONDARY,
+            onClick = { scope.launch { select(site) } }) }
+        flexBox(direction = Direction.ROW, gap = 6) { buttonGroup {
+          if (page > 0) button("Prev", style = ButtonStyle.SECONDARY, onClick = { scope.launch {
+            buildingPage = (buildingPage - 1).coerceAtLeast(0); lastHudKey = ""; publishHud()
+          } })
+          if (page + 1 < pages) button("More", style = ButtonStyle.SECONDARY, onClick = { scope.launch {
+            buildingPage = (buildingPage + 1).coerceAtMost(pages - 1); lastHudKey = ""; publishHud()
+          } })
+          button("Rescan", style = ButtonStyle.PRIMARY, onClick = { scope.launch { rescanNow() } })
+        } }
+      } }
+      return
+    }
+    if (unitPickerVisible && unitBrowser.isOpen) {
+      val page = unitBrowser.page
+      val rows = unitBrowser.visible
+      send { flexBox(direction = Direction.COLUMN, gap = 6, padding = 12) {
+        text(unitBrowser.building?.fullAddress?.substringBefore(",") ?: "Choose unit", style = TextStyle.HEADING)
+        text("Select unit · page ${page + 1}/${unitBrowser.pageCount}" +
+            if (unitBrowser.directory.truncated) " · partial list" else "", style = TextStyle.META, color = TextColor.SECONDARY)
+        rows.chunked(2).forEach { pair ->
+          flexBox(direction = Direction.ROW, gap = 8) { buttonGroup {
+            pair.forEach { unit -> button("Unit ${unit.number}", style = ButtonStyle.PRIMARY,
+                onClick = { scope.launch { chooseUnit(unit.oid) } }) }
+          } }
+        }
+        flexBox(direction = Direction.ROW, gap = 6) { buttonGroup {
+          if (page > 0) button("Prev", style = ButtonStyle.SECONDARY, onClick = { scope.launch {
+            unitBrowser.previous(); lastHudKey = ""; publishHud()
+          } })
+          if (page + 1 < unitBrowser.pageCount) button("More", style = ButtonStyle.SECONDARY, onClick = { scope.launch {
+            unitBrowser.next(); lastHudKey = ""; publishHud()
+          } })
+          button("Buildings", style = ButtonStyle.SECONDARY, onClick = { scope.launch { showBuildings() } })
+        } }
+      } }
+      return
+    }
     val p = s.assessment
     if (p != null) {
       val site = s.target.site
       val fix = locator.fix
       val distance = if (site != null && fix != null) HouseLocator.distanceM(fix.latitude, fix.longitude,
           site.latitude, site.longitude).toInt() else null
-      val bitmap = HudRenderer.render(p, selectedListing, distance, s.target.kind.label)
+      val bitmap = HudRenderer.render(p, selectedListing, distance, s.selectedUnit?.let { "Unit ${it.number} · selected" } ?: s.target.kind.label)
       send { flexBox(direction = Direction.COLUMN, gap = 8) {
         image(bitmap = bitmap, sizePreset = ImageSize.FILL, cornerRadius = CornerRadius.MEDIUM)
         controls()
@@ -229,7 +357,7 @@ class HouseHudController(
       send { flexBox(direction = Direction.COLUMN, gap = 8) {
         flexBox(padding = 20, gap = 8, background = FlexBoxBackground.CARD) {
           text(s.target.kind.label, style = TextStyle.BODY, color = TextColor.SECONDARY)
-          text(s.target.site?.fullAddress?.substringBefore(",") ?: "BC House HUD", style = TextStyle.HEADING)
+          text(s.selectedUnit?.let { "Unit ${it.number}" } ?: s.target.site?.fullAddress?.substringBefore(",") ?: "BC House HUD", style = TextStyle.HEADING)
           text(s.message, style = TextStyle.BODY, color = TextColor.SECONDARY)
         }
         controls()
@@ -240,9 +368,15 @@ class HouseHudController(
   private fun FlexBoxScope.controls() {
     flexBox(direction = Direction.ROW, gap = 8, alignment = Alignment.CENTER) {
       buttonGroup {
-        button("Prev", style = ButtonStyle.SECONDARY, iconName = IconName.ARROW_LEFT, onClick = { scope.launch { step(-1) } })
+        if (unitBrowser.isOpen) {
+          button("Units", style = ButtonStyle.PRIMARY, onClick = { scope.launch { showUnits() } })
+          button("Buildings", style = ButtonStyle.SECONDARY, onClick = { scope.launch { showBuildings() } })
+        } else {
+          button("Buildings", style = ButtonStyle.SECONDARY, onClick = { scope.launch { showBuildings() } })
+          button("Prev", style = ButtonStyle.SECONDARY, iconName = IconName.ARROW_LEFT, onClick = { scope.launch { step(-1) } })
+        }
         button("Rescan", style = ButtonStyle.PRIMARY, iconName = IconName.TWO_ARROWS_CLOCKWISE, onClick = { scope.launch { rescanNow() } })
-        button("Next", style = ButtonStyle.SECONDARY, iconName = IconName.ARROW_RIGHT, onClick = { scope.launch { step(1) } })
+        if (!unitBrowser.isOpen) button("Next", style = ButtonStyle.SECONDARY, iconName = IconName.ARROW_RIGHT, onClick = { scope.launch { step(1) } })
       }
     }
   }

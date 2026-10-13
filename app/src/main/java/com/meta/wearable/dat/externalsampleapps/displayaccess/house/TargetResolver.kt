@@ -2,7 +2,7 @@ package com.meta.wearable.dat.externalsampleapps.displayaccess.house
 
 data class TextTag(val text: String, val left: Float, val top: Float, val right: Float, val bottom: Float)
 enum class TargetKind(val label: String) {
-  SEARCHING("Searching"), READING("Reading number"), VISUAL("Visual match"), LAST_VISUAL("Last visual match"),
+  BUILDING_HELD("Building held"), SEARCHING("Searching"), READING("Reading number"), VISUAL("Visual match"), LAST_VISUAL("Last visual match"),
   ESTIMATE("Nearby estimate"), UNCERTAIN("Uncertain"), MANUAL("Manually selected"), LOCATION_WEAK("Location weak")
 }
 data class TargetDecision(val kind: TargetKind, val site: AddressSite? = null)
