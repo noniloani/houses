@@ -45,7 +45,11 @@ class TargetResolver {
     if (matched.size > 1) {
       val streetMatches = matched.filter { site ->
         val street = normalizeStreet(site.streetName + " " + site.streetType)
-        tags.any { normalizeStreet(it.text).contains(street) && street.length > 3 }
+        val direction = normalizeStreet(site.streetDirection)
+        val names = if (direction.isEmpty()) listOf(street) else listOf("$direction $street", "$street $direction")
+        tags.any { tag -> names.any { name ->
+          name.length > 3 && Regex("(?:^|\\s)${Regex.escape(name)}(?:\\s|$)").containsMatchIn(normalizeStreet(tag.text))
+        } }
       }
       if (streetMatches.size == 1) matched = streetMatches
     }
@@ -96,7 +100,7 @@ class TargetResolver {
     fun normalizeNumber(s: String) = s.uppercase().replace(" ", "")
     fun normalizeStreet(s: String): String = s.uppercase().replace(Regex("[^A-Z0-9 ]"), " ")
         .split(Regex("\\s+")).filter { it.isNotBlank() }.joinToString(" ") {
-          when (it) { "STREET" -> "ST"; "AVENUE" -> "AVE"; "ROAD" -> "RD"; "DRIVE" -> "DR"; else -> it }
+          when (it) { "STREET" -> "ST"; "AVENUE" -> "AVE"; "ROAD" -> "RD"; "DRIVE" -> "DR"; "WEST" -> "W"; "EAST" -> "E"; "NORTH" -> "N"; "SOUTH" -> "S"; else -> it }
         }
   }
 }

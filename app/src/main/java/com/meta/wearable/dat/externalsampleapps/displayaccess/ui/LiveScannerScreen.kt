@@ -107,6 +107,14 @@ fun LiveScannerScreen(
         }
       }
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    TextButton(onClick = {
+      context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+          android.net.Uri.parse("package:${context.packageName}")))
+    }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+      Icon(Icons.Default.Security, null, Modifier.size(16.dp)); Spacer(Modifier.width(8.dp))
+      Text("App permissions")
+    }
     TextButton(onClick = onPreview, modifier = Modifier.align(Alignment.CenterHorizontally), enabled = !busy) {
       Icon(Icons.Default.PhoneAndroid, null, Modifier.size(16.dp)); Spacer(Modifier.width(8.dp))
       Text("Preview on phone")

@@ -1,7 +1,7 @@
 # BC House HUD: camera and location targeting
 
 Date: 2026-10-12
-Status: Design proposal for written-spec review
+Status: Implemented for Android field testing; user requested immediate build and push
 
 ## Outcome
 
@@ -90,4 +90,4 @@ Provide a signed debug APK, concise install instructions, and a field-test check
 
 ## Review
 
-Self-review completed: scope is one camera/location subsystem plus the UI that explains it; no cloud backend, facade dataset, GPS-exactness promise, or invented probability. Camera pixel conversion and permission details will be verified against the actual installed SDK before implementation. Written-spec approval is pending.
+Self-review completed: scope is one camera/location subsystem plus the UI that explains it; no cloud backend, facade dataset, GPS-exactness promise, or invented probability. Camera pixel conversion and permission details will be verified against the actual installed SDK before implementation. User explicitly directed immediate implementation and delivery; see the implementation plan for verification results.

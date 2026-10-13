@@ -27,7 +27,8 @@ class HouseHudController(
     private val send: (ContentScope.() -> Unit) -> Unit,
     private val listings: ListingProvider = ListingProvider.NONE,
 ) {
-  private val locator = HouseLocator(context.applicationContext)
+  private val appContext = context.applicationContext
+  private val locator = HouseLocator(appContext)
   private val geocoder = BcGeocoderClient()
   private val assessments = BcAssessmentClient()
   private val resolver = TargetResolver()
@@ -51,10 +52,23 @@ class HouseHudController(
 
   fun start() {
     stop()
+    if (!hasLocationPermission()) {
+      _state.value = HouseScanState(message = "Location permission required. Open App permissions and allow precise location.")
+      send { flexBox(padding = 20, direction = Direction.COLUMN, gap = 8) {
+        text("Location permission required", style = TextStyle.HEADING)
+        text("Allow precise location in Android app permissions, then start again.", style = TextStyle.BODY)
+      } }
+      return
+    }
     _state.value = HouseScanState(active = true, message = "Waiting for location…")
     locator.start()
     followJob = scope.launch {
       while (isActive) {
+        if (!hasLocationPermission()) {
+          stop()
+          _state.value = HouseScanState(message = "Location permission revoked. Open App permissions and allow precise location.")
+          return@launch
+        }
         val fix = locator.fix
         val now = SystemClock.elapsedRealtime()
         _state.update { it.copy(locationAccuracyM = fix?.accuracyM, locationAgeMs = fix?.ageMs) }
@@ -75,6 +89,9 @@ class HouseHudController(
       }
     }
   }
+
+  private fun hasLocationPermission() = androidx.core.content.ContextCompat.checkSelfPermission(appContext,
+      android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
   fun stop() {
     generation++; candidateGeneration++

@@ -94,4 +94,18 @@ class TargetResolverTest {
     val r = TargetResolver()
     assertEquals(TargetKind.UNCERTAIN, r.observe(fix, listOf(site("100")), listOf(tag("100")), 1000, false).kind)
   }
+  @Test fun streetSubstringDoesNotDisambiguateAnAddress() {
+    val r = TargetResolver()
+    val sites = listOf(site("100", "MAIN"), site("100", "PINE"))
+    val tags = listOf(tag("100"), tag("DOMAIN ST"))
+    for (now in listOf(1000L, 1500L, 2000L)) r.observe(fix, sites, tags, now)
+    assertEquals(TargetKind.UNCERTAIN, r.current(fix, sites, 2000).kind)
+  }
+  @Test fun streetDirectionDisambiguatesSameNumberAndStreet() {
+    val r = TargetResolver()
+    val west = site("100").copy(fullAddress = "100 OAK ST W, VANCOUVER", streetDirection = "W")
+    val east = site("100").copy(fullAddress = "100 OAK ST E, VANCOUVER", streetDirection = "E")
+    val result = r.observe(fix, listOf(east, west), listOf(tag("100"), tag("OAK ST W")), 1000)
+    assertEquals("W", result.site?.streetDirection)
+  }
 }

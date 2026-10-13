@@ -82,7 +82,8 @@ class GlassesVision(
         scope.launch {
           stream.errorStream.collect { error ->
             if (run == generation) {
-              unavailable(error.description)
+              if (VisionErrorPolicy.mustStop(error)) unavailable(error.description)
+              else _state.update { it.copy(error = error.description) }
             }
           }
         }

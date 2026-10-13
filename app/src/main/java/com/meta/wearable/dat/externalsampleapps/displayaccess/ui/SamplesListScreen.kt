@@ -87,8 +87,8 @@ private val SampleButtonEndColor = Color(0xFF2A50BA)
 private val SampleButtonDisabledStartColor = Color(0xFFD4DAE4)
 private val SampleButtonDisabledEndColor = Color(0xFFC5CDD8)
 private val SampleButtonDisabledTextColor = Color(0xFFF7F8FA)
-private val DeveloperPreviewBackground = Color(0xFFF2F2F7)
-private val DeveloperPreviewSelectionColor = Color.White
+private val DeveloperPreviewBackground = Color(0xFF0B1B23)
+private val DeveloperPreviewSelectionColor = Color(0xFF244335)
 private val DeveloperPreviewActiveColor = Color(0xFF2E7D32)
 private const val PREVIEW_DISPLAY_ASPECT_RATIO = 1f
 
@@ -371,7 +371,7 @@ private fun DeveloperPreviewModeSelector(
       modifier =
           Modifier.fillMaxWidth()
               .clip(RoundedCornerShape(12.dp))
-              .background(Color(0xFFE4E4E9))
+              .background(Color(0xFF142633))
               .padding(4.dp),
   ) {
     DeveloperPreviewModeButton(
@@ -438,7 +438,7 @@ private fun DeveloperPreviewStage(
           Modifier.fillMaxWidth()
               .aspectRatio(PREVIEW_DISPLAY_ASPECT_RATIO)
               .clip(RoundedCornerShape(24.dp))
-              .background(Color.White)
+              .background(Color(0xFF142633))
               .padding(20.dp),
   ) {
     when (selectedMode) {

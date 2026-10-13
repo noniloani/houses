@@ -228,11 +228,20 @@ class DisplayViewModel(
   val scanState = houseHud.state
   private val vision = GlassesVision(viewModelScope, houseHud::observe, houseHud::cameraAvailability)
   val visionState = vision.state
+  private val cameraPermissions = CameraPermissionRequests()
+  suspend fun requestCameraPermission(launch: () -> Unit): PermissionStatus = cameraPermissions.request(launch)
+  fun completeCameraPermission(status: PermissionStatus) = cameraPermissions.complete(status)
+
   private var cameraRequested = false
   private var scanStartJob: Job? = null
 
   fun startScanning(requestPermission: suspend (Permission) -> PermissionStatus) {
     if (scanStartJob?.isActive == true || scanState.value.active) return
+    if (androidx.core.content.ContextCompat.checkSelfPermission(getApplication(),
+        android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      _uiState.value = _uiState.value.copy(errorMessage = "Precise location permission required. Open App permissions, allow location, then start scanning.")
+      return
+    }
     scanStartJob = viewModelScope.launch {
       _uiState.value = _uiState.value.copy(isRequestingCamera = true, errorMessage = null)
       try {
@@ -570,7 +579,7 @@ class DisplayViewModel(
     when (sample) {
       SampleApp.BC_HOUSE_HUD -> {
         houseHud.start()
-        if (cameraRequested) {
+        if (cameraRequested && scanState.value.active) {
           synchronized(sessionLock) { session }?.let(vision::start)
         }
       }
