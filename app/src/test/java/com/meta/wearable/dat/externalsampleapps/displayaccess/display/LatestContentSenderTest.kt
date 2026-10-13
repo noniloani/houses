@@ -37,4 +37,31 @@ class LatestContentSenderTest {
     assertEquals(2, tries)
     sender.close()
   }
+  @Test fun oldFailureCannotRecoverNewConnection() = runBlocking {
+    var recoveries = 0
+    val gate = CompletableDeferred<Boolean>()
+    val sent = mutableListOf<String>()
+    val sender = LatestContentSender<String>(this, onFailure = { recoveries++ }) {
+      sent.add(it); if (it == "old") gate.await() else true
+    }
+    sender.ready(); sender.submit("old"); yield()
+    sender.disconnected(); sender.submit("new"); sender.ready()
+    gate.complete(false); yield()
+    assertEquals(listOf("old", "new"), sent); assertEquals(0, recoveries)
+    sender.close()
+  }
+  @Test fun clearedSendCannotRequestRecovery() = runBlocking {
+    var recoveries = 0
+    val gate = CompletableDeferred<Boolean>()
+    val sender = LatestContentSender<String>(this, onFailure = { recoveries++ }) { gate.await() }
+    sender.ready(); sender.submit("old"); yield()
+    sender.clear(); gate.complete(false); yield()
+    assertEquals(0, recoveries); sender.close()
+  }
+  @Test fun currentFailureRequestsRecoveryOnce() = runBlocking {
+    var recoveries = 0
+    val sender = LatestContentSender<String>(this, onFailure = { recoveries++ }) { false }
+    sender.ready(); sender.submit("unit"); yield(); sender.submit("new"); yield()
+    assertEquals(1, recoveries); sender.close()
+  }
 }

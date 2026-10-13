@@ -4,7 +4,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 
 /** Main-thread-owned latest-value queue: one send in flight and replay on each attachment. */
-class LatestContentSender<T : Any>(scope: CoroutineScope, private val send: suspend (T) -> Boolean) {
+class LatestContentSender<T : Any>(scope: CoroutineScope, private val onFailure: () -> Unit = {}, private val send: suspend (T) -> Boolean) {
   private val signal = Channel<Unit>(Channel.CONFLATED)
   private var latest: T? = null
   private var version = 0L
@@ -20,7 +20,7 @@ class LatestContentSender<T : Any>(scope: CoroutineScope, private val send: susp
         val success = send(content)
         if (sendingConnection != connection) continue
         if (success) delivered = sendingVersion
-        else { available = false; break }
+        else { available = false; onFailure(); break }
       }
     }
   }

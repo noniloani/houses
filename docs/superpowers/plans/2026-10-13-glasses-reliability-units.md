@@ -26,3 +26,7 @@ User request: fix unstable connection and missing glasses HUD, and provide build
 - Meta foreground service sample: https://github.com/facebook/meta-wearables-dat-android/blob/main/samples/CameraAccess/app/src/main/java/com/meta/wearable/dat/externalsampleapps/cameraaccess/stream/StreamingService.kt
 - BC Assessment unit selector script: https://www.bcassessment.ca/Scripts/App/searchjs
 - BC Geocoder API guide: https://github.com/bcgov/api-specs/blob/master/geocoder/geocoder-developer-guide.md
+
+### Final review corrections
+
+Independent review found delayed service-stop ownership, stale display-failure recovery, and retry-budget reuse. Added per-run service leases, epoch-gated recovery callbacks, and a fresh-scan retry reset. Three regression tests failed with ownership/epoch guards removed and passed after restoration; full suite: 44 tests, zero failures. Final APK rebuilt and installed successfully on the emulator. Physical glasses remain unverified.

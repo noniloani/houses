@@ -270,7 +270,10 @@ class DisplayViewModel(
   private var recoveryAttempts = 0
   private var lastSelector: DeviceSelector? = null
   private var lastSelectedDeviceId: DeviceIdentifier? = null
-  private val contentSender = LatestContentSender<ContentScope.() -> Unit>(viewModelScope) { content ->
+  private val contentSender = LatestContentSender<ContentScope.() -> Unit>(viewModelScope, onFailure = {
+    _uiState.update { it.copy(isSending = false) }
+    scheduleRecovery("HUD transport interrupted")
+  }) { content ->
     val current = synchronized(sessionLock) { display }
     if (current == null || _uiState.value.displayState != DisplayState.STARTED) false
     else {
@@ -285,14 +288,12 @@ class DisplayViewModel(
             succeeded = true
           }
         }, onFailure = { error, _ ->
-          _uiState.update { it.copy(isSending = false, errorMessage = error.description) }
-          scheduleRecovery("HUD send failed: ${error.description}")
+          // Recovery is performed by the sender only after checking its connection epoch.
         })
         succeeded
       } catch (cancelled: CancellationException) { throw cancelled }
       catch (error: Exception) {
-        _uiState.update { it.copy(isSending = false, errorMessage = error.message) }
-        scheduleRecovery("HUD transport interrupted")
+        // A delayed failure from an old display must have no UI or recovery side effects.
         false
       }
     }
@@ -599,6 +600,7 @@ class DisplayViewModel(
       selectedDeviceId: DeviceIdentifier?,
   ) {
     if (sample == SampleApp.BC_HOUSE_HUD) {
+      if (!scanWanted) recoveryAttempts = 0
       scanWanted = true
       if (androidx.core.content.ContextCompat.checkSelfPermission(getApplication(),
           android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
